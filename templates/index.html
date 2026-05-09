@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="utf-8">
+    <title>{{ title }}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <!-- Leaflet Sidebar CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-sidebar-v2@1.0.1/dist/leaflet-sidebar.min.css" />
+
+    <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+    <div id="map"></div>
+    
+    <!-- Sidebar panneau -->
+    <div id="sidebar" class="sidebar">
+        <div class="sidebar-header">
+            <h2 id="sidebar-title">Détails</h2>
+            <button onclick="closeSidebar()" style="float:right;">✕</button>
+        </div>
+        <div id="sidebar-content">
+            <!-- Contenu dynamique JS -->
+        </div>
+    </div>
+    
+    <!-- Overlay pour fermer -->
+    <div id="overlay" class="overlay" onclick="closeSidebar()"></div>
+    
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet-sidebar-v2@1.0.1/dist/leaflet-sidebar.min.js"></script>
+    
+    <script>
+        // Données générées par Jinja2
+        const sitesData = {{ sites_json | tojson }};
+        
+        // Init map pleine page
+        const map = L.map('map').setView([{{ center_lat }}, {{ center_lon }}], {{ zoom }});
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+            referrerPolicy: 'strict-origin-when-cross-origin',
+        }).addTo(map);
+        
+        // Markers
+        sitesData.forEach(site => {
+            const marker = L.marker([site.lat, site.lon])
+                .bindPopup(`<b>${site.name}</b><br>
+                    <img src="https://commons.wikimedia.org/w/thumb.php?f=${site.image}&w=180" width="180" height="120" style="border-radius: 5px;">`)
+                .addTo(map);
+            
+            marker.on('click', function() {
+                openSidebar(site);
+            });
+        });
+        
+        // Sidebar toggle
+        function openSidebar(site) {
+            document.getElementById('sidebar-title').textContent = site.name;
+            document.getElementById('sidebar-content').innerHTML = `
+                <img src="https://commons.wikimedia.org/w/thumb.php?f=${site.image}&w=1000" width="100%" style="border-radius: 8px;">
+                <p>${site.en_wiki || ''}</p>
+                ${site.commons_cat ? `<a href="https://commons.wikimedia.org/wiki/Category:${site.commons_cat}">Photos Commons</a>` : ''}
+            `;
+            document.getElementById('sidebar').classList.add('open');
+            document.getElementById('overlay').classList.add('open');
+        }
+        
+        function closeSidebar() {
+            document.getElementById('sidebar').classList.remove('open');
+            document.getElementById('overlay').classList.remove('open');
+        }
+    </script>
+</body>
+</html>
