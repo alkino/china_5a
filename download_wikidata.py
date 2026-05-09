@@ -10,11 +10,9 @@ from jinja2 import Environment, FileSystemLoader
 
 
 class Input:
-    logger: logging.Logger
     wikidata_cache: Path
 
-    def __init__(self, logger: logging.Logger, wikidata_cache: Path):
-        self.logger = logger
+    def __init__(self, wikidata_cache: Path):
         self.wikidata_cache = wikidata_cache
 
     def is_cache_outdated(self):
@@ -27,7 +25,7 @@ class Input:
 
     def get_data_from_wikidata(self):
         if not self.is_cache_outdated():
-            self.logger.info("Loading from cache")
+            logging.info("Loading from cache")
             with self.wikidata_cache.open() as f:
                 return json.load(f)
 
@@ -79,7 +77,7 @@ class Input:
                 link = i['image']['value']
                 image_name = link.rsplit('/')[-1]
             else:
-                self.logger.debug(f"${i['siteLabel']['value']} has no picture")
+                logging.debug(f"${i['siteLabel']['value']} has no picture")
                 image_name = None
             site = {
                 "name": i['siteLabel']['value'],
@@ -123,7 +121,10 @@ class Input:
         return result
 
 
-def generate_site(sites):
+def generate_site(sites, outdir):
+    website_out = outdir / "website"
+    website_out.mkdir(parents=True, exist_ok=True)
+
     env = Environment(loader=FileSystemLoader('templates'))
     template = env.get_template('index.html')
 
@@ -134,25 +135,26 @@ def generate_site(sites):
         center_lon=105.0,
         zoom=5,
     )
-    Path("carte5a.html").write_text(carte_html)
+    (website_out / "index.html").write_text(carte_html)
+
+    (Path("templates") / "style.css").copy_into(website_out)
 
 
 if __name__ == "__main__":
-    logger = logging.getLogger("china5a")
     parser = argparse.ArgumentParser(description="Create map for 5A in China")
     parser.add_argument("--output", type=Path, default=Path("output"))
     parser.add_argument("--clean-wikidata-cache", action="store_true")
     parser.add_argument("--logging", type=str, choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'], default="INFO")
     args = parser.parse_args()
 
-    logger.setLevel("DEBUG")
-    logger.debug("foo")
-    (args.output / "cache").mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(level=args.logging)
+    cache_dir = args.output / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
     if args.clean_wikidata_cache:
-        (args.output / "cache" / "wikidata.cache").unlink(missing_ok=True)
+        (cache_dir / "wikidata.cache").unlink(missing_ok=True)
 
-    openData = Input(logger, args.output / "cache" / "wikidata.cache")
+    openData = Input(cache_dir / "wikidata.cache")
     openData.get_data_from_wikidata()
     sites = openData.parse_wikidata_cache()
 
-    generate_site(sites)
+    generate_site(sites, args.output)
