@@ -92,6 +92,14 @@
             marker.on('click', function() {
                 openSidebar(site);
             });
+ 
+            marker.on('mouseover', function () {
+                this.openPopup();
+            });
+
+            marker.on('mouseout', function () {
+                this.closePopup();
+            });
         });
 
         // Sidebar toggle
