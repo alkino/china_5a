@@ -7,6 +7,7 @@ import json
 import logging
 import argparse
 from jinja2 import Environment, FileSystemLoader
+from urllib.parse import urlparse
 
 
 class Input:
@@ -16,6 +17,9 @@ class Input:
         self.wikidata_cache = wikidata_cache
 
     def is_cache_outdated(self):
+        """
+        Return a boolean to tell if the wikidata cache is older than one day.
+        """
         if not self.wikidata_cache.exists():
             return True
 
@@ -31,39 +35,56 @@ class Input:
 
         url = 'https://query.wikidata.org/sparql'
         query = '''
-        SELECT ?site ?siteLabel ?lon ?lat ?common ?article ?wiki
-               (SAMPLE(?all_image) AS ?image) WHERE {
+        SELECT ?site ?siteLabel ?lon ?lat ?common
+               (SAMPLE(?all_image) AS ?image)
+               (GROUP_CONCAT(DISTINCT ?article; SEPARATOR="|") AS ?articles)
+               (GROUP_CONCAT(DISTINCT ?wiki;    SEPARATOR="|") AS ?wikis)
+        WHERE {
           ?site wdt:P31/wdt:P279* wd:Q6838244 .
           OPTIONAL { ?site p:P625/psv:P625 [ wikibase:geoLongitude ?lon ; wikibase:geoLatitude ?lat ] . }
           SERVICE wikibase:label { bd:serviceParam wikibase:language "en" }
           OPTIONAL { ?site wdt:P373 ?common . }
           OPTIONAL { ?site wdt:P18 ?all_image . }
-          ?article schema:about ?site ;
+          OPTIONAL {
+            ?article schema:about ?site ;
                    schema:isPartOf ?wiki .
-          FILTER(CONTAINS(STR(?wiki), "en.wikipedia.org"))
+          }
         }
-        GROUP BY ?site ?siteLabel ?lon ?lat ?common ?article ?wiki
+        GROUP BY ?site ?siteLabel ?lon ?lat ?common
         '''
 
         headers = {
                 'User-Agent': 'China_5A/0.1 (https://github.com/alkino/china_5a; me@alkino.fr)'
         }
-        r = requests.get(url, params={'format': 'json', 'query': query}, headers=headers)
+        r = requests.get(url,
+                         params={'format': 'json', 'query': query},
+                         headers=headers)
 
         if r.status_code != 200:
-            print(r.text)
+            logging.error(r.text)
             exit()
 
         data = r.json()
-        print([i for i in data['results']['bindings'] if 'article' not in i])
-        print("====")
-        titles = [i['article']['value'] for i in data['results']['bindings'] if 'article' in i]
+
+        for i in data['results']['bindings']:
+            articles = i["articles"]["value"].split("|") if "articles" in i else []
+            i['wikis'] = {urlparse(a).hostname.split(".")[0]: a for a in articles if a}
+            del i["articles"]
+
+            i["image"] = i["image"]["value"] if "image" in i else None
+            i["lat"] = i["lat"]["value"] if "lat" in i else None
+            i["lon"] = i["lon"]["value"] if "lon" in i else None
+            i["common"] = i["common"]["value"] if "common" in i else None
+
+        titles = [i['wikis']['en']
+                  for i in data['results']['bindings']
+                  if 'wikis' in i and 'en' in i['wikis']]
         titles = [i.rsplit('/')[-1] for i in titles]
-        extracts = self.get_data_from_wiki(titles)
+        titles.sort()
+        extracts = self.get_data_from_wiki(titles, 'en')
 
         for i in data['results']['bindings']:
             i["intro"] = extracts[i['siteLabel']['value']] if i['siteLabel']['value'] in extracts else ""
-
 
         with self.wikidata_cache.open('w') as f:
             json.dump(data, f)
@@ -73,23 +94,23 @@ class Input:
             data = json.load(f)
         sites = []
         for i in data["results"]["bindings"]:
-            if 'image' in i:
-                link = i['image']['value']
-                image_name = link.rsplit('/')[-1]
+            if i["image"]:
+                image_name = i["image"].rsplit('/')[-1]
             else:
-                logging.debug(f"${i['siteLabel']['value']} has no picture")
+                logging.debug(f"'{i['siteLabel']['value']}' has no picture")
                 image_name = None
             site = {
                 "name": i['siteLabel']['value'],
-                "lon": i['lon']['value'] if 'lon' in i else None,
-                "lat": i['lat']['value'] if 'lat' in i else None,
-                "common": i['common']['value'] if 'common' in i else None,
+                "lon": i['lon'],
+                "lat": i['lat'],
+                "common": i['common'],
                 "image": image_name,
                 "en_wiki": i['intro'],
             }
             if site['lon'] is None or site['lat'] is None:
-                print(site)
-            sites.append(site)
+                logging.debug(f"'{site["name"]}' has no location")
+            else:
+                sites.append(site)
         return sites
 
     def get_data_from_wiki(self, titles, lang="en"):
@@ -107,7 +128,6 @@ class Input:
                 "titles": '|'.join(batch),
                 "prop": "extracts",
                 "format": "json",
-                "exintro": 1,
                 "redirects": 1,
             }
             r = requests.get(url, params=params, headers=headers)
@@ -117,6 +137,8 @@ class Input:
                 title = page["title"]
                 if "extract" in page:
                     result[title] = page["extract"]
+                else:
+                    logging.debug(f"'{title}' has no extract in wikipedia")
 
         return result
 
@@ -138,6 +160,24 @@ def generate_site(sites, outdir):
     (website_out / "index.html").write_text(carte_html)
 
     (Path("templates") / "style.css").copy_into(website_out)
+    (Path("templates") / "china_provinces.js").copy_into(website_out)
+
+
+def generate_gpx(sites, outdir):
+    website_out = outdir / "website"
+    website_out.mkdir(parents=True, exist_ok=True)
+
+    gpx_str = """<?xml version="1.0" encoding="UTF-8" standalone="no" ?>
+    <gpx>
+"""
+
+    for s in sites:
+        if "lat" in s and "lon" in s:
+            gpx_str += f"        <wpt lat=\"{s["lat"]}\" lon=\"{s["lon"]}\"><name>{s["name"]}</name></wpt>\n"
+
+    gpx_str += "</gpx>"
+
+    (website_out / "china_5a.gpx").write_text(gpx_str)
 
 
 if __name__ == "__main__":
@@ -158,3 +198,4 @@ if __name__ == "__main__":
     sites = openData.parse_wikidata_cache()
 
     generate_site(sites, args.output)
+    generate_gpx(sites, args.output)
