@@ -71,20 +71,19 @@ class Input:
             i['wikis'] = {urlparse(a).hostname.split(".")[0]: a for a in articles if a}
             del i["articles"]
 
+            i["name"] = i["siteLabel"]["value"]
             i["image"] = i["image"]["value"] if "image" in i else None
             i["lat"] = i["lat"]["value"] if "lat" in i else None
             i["lon"] = i["lon"]["value"] if "lon" in i else None
             i["common"] = i["common"]["value"] if "common" in i else None
 
-        titles = [i['wikis']['en']
-                  for i in data['results']['bindings']
-                  if 'wikis' in i and 'en' in i['wikis']]
-        titles = [i.rsplit('/')[-1] for i in titles]
-        titles.sort()
+            i["slug"] = i['wikis']['en'].rsplit('/')[-1] if 'wikis' in i and 'en' in i['wikis'] else None
+
+        titles = [i["slug"] for i in data['results']['bindings'] if i is not None]
         extracts = self.get_data_from_wiki(titles, 'en')
 
         for i in data['results']['bindings']:
-            i["intro"] = extracts[i['siteLabel']['value']] if i['siteLabel']['value'] in extracts else ""
+            i["en_wiki"] = extracts.get(i["slug"], "")
 
         with self.wikidata_cache.open('w') as f:
             json.dump(data, f)
@@ -100,12 +99,12 @@ class Input:
                 logging.debug(f"'{i['siteLabel']['value']}' has no picture")
                 image_name = None
             site = {
-                "name": i['siteLabel']['value'],
+                "name": i['name'],
                 "lon": i['lon'],
                 "lat": i['lat'],
                 "common": i['common'],
                 "image": image_name,
-                "en_wiki": i['intro'],
+                "en_wiki": i['en_wiki'],
             }
             if site['lon'] is None or site['lat'] is None:
                 logging.debug(f"'{site["name"]}' has no location")
@@ -116,29 +115,32 @@ class Input:
     def get_data_from_wiki(self, titles, lang="en"):
         url = f"https://{lang}.wikipedia.org/w/api.php"
         result = {}
-        headers = {
-            'User-Agent': 'China_5A/0.1 (https://github.com/alkino/china_5a; me@alkino.fr)'
-        }
 
-        batch_size = 50
-        for start_idx in range(0, len(titles), batch_size):
-            batch = titles[start_idx:start_idx + batch_size]
+        s = requests.Session()
+        s.headers.update({
+            'User-Agent': 'China_5A/0.1 (https://github.com/alkino/china_5a; me@alkino.fr)'
+            })
+
+        for title in titles:
             params = {
                 "action": "query",
-                "titles": '|'.join(batch),
+                "titles": title,
                 "prop": "extracts",
+                "exintro": 1,
                 "format": "json",
                 "redirects": 1,
             }
-            r = requests.get(url, params=params, headers=headers)
+            r = s.get(url, params=params)
             data = r.json()
-            pages = data["query"]["pages"]
-            for page in pages.values():
-                title = page["title"]
-                if "extract" in page:
-                    result[title] = page["extract"]
-                else:
-                    logging.debug(f"'{title}' has no extract in wikipedia")
+
+            if "query" in data:
+                page = next(iter(data["query"]["pages"].values()))
+            if "missing" in page:
+                logging.warning(f"'{title}' not found on Wikipedia ({lang})")
+            elif "extract" in page and page["extract"].strip():
+                result[title] = page["extract"]
+            else:
+                logging.warning(f"'{title}' has no extract in wikipedia")
 
         return result
 
