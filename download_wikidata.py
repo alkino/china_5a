@@ -7,7 +7,7 @@ import json
 import logging
 import argparse
 from jinja2 import Environment, FileSystemLoader
-from urllib.parse import urlparse
+from urllib.parse import urlsplit, unquote
 
 
 class Input:
@@ -66,48 +66,60 @@ class Input:
 
         data = r.json()
 
+        sites = dict()
+
         for i in data['results']['bindings']:
+            url = i["site"]["value"]
+            QID = urlsplit(url).path.rsplit("/")[-1]
+
+            if QID in sites:
+                logging.warning(f"There is a duplicate for '{QID}'!")
+
+            sites[QID] = dict()
+            site = sites[QID]
+
+            site["name"] = i["siteLabel"]["value"]
+            site["image"] = i["image"]["value"] if "image" in i else None
+            site["lat"] = i["lat"]["value"] if "lat" in i else None
+            site["lon"] = i["lon"]["value"] if "lon" in i else None
+            site["common"] = i["common"]["value"] if "common" in i else None
+
             articles = i["articles"]["value"].split("|") if "articles" in i else []
-            i['wikis'] = {urlparse(a).hostname.split(".")[0]: a for a in articles if a}
-            del i["articles"]
+            wikis = [a for a in articles if a and "en.wikipedia.org" in a]
+            if wikis:
+                site["slug"] = unquote(wikis[0].rsplit('/')[-1])
+            else:
+                site["slug"] = None
 
-            i["name"] = i["siteLabel"]["value"]
-            i["image"] = i["image"]["value"] if "image" in i else None
-            i["lat"] = i["lat"]["value"] if "lat" in i else None
-            i["lon"] = i["lon"]["value"] if "lon" in i else None
-            i["common"] = i["common"]["value"] if "common" in i else None
-
-            i["slug"] = i['wikis']['en'].rsplit('/')[-1] if 'wikis' in i and 'en' in i['wikis'] else None
-
-        titles = [i["slug"] for i in data['results']['bindings'] if i is not None]
+        titles = {sites[qid]["slug"]: qid for qid in sites if sites[qid]["slug"] is not None}
         extracts = self.get_data_from_wiki(titles, 'en')
 
-        for i in data['results']['bindings']:
-            i["en_wiki"] = extracts.get(i["slug"], "")
+        for s in sites:
+            sites[s]["en_wiki"] = extracts.get(s, "")
 
         with self.wikidata_cache.open('w') as f:
-            json.dump(data, f)
+            json.dump(sites, f)
 
     def parse_wikidata_cache(self):
         with self.wikidata_cache.open('r') as f:
             data = json.load(f)
         sites = []
-        for i in data["results"]["bindings"]:
-            if i["image"]:
-                image_name = i["image"].rsplit('/')[-1]
+        for k, v in data.items():
+            if v["image"]:
+                image_name = v["image"].rsplit('/')[-1]
             else:
-                logging.debug(f"'{i['siteLabel']['value']}' has no picture")
+                logging.info(f"'{v['name']}' has no picture")
                 image_name = None
             site = {
-                "name": i['name'],
-                "lon": i['lon'],
-                "lat": i['lat'],
-                "common": i['common'],
+                "name": v['name'],
+                "lon": v['lon'],
+                "lat": v['lat'],
+                "common": v['common'],
                 "image": image_name,
-                "en_wiki": i['en_wiki'],
+                "en_wiki": v['en_wiki'],
             }
             if site['lon'] is None or site['lat'] is None:
-                logging.debug(f"'{site["name"]}' has no location")
+                logging.warning(f"'{site["name"]}' has no location")
             else:
                 sites.append(site)
         return sites
@@ -121,10 +133,13 @@ class Input:
             'User-Agent': 'China_5A/0.1 (https://github.com/alkino/china_5a; me@alkino.fr)'
             })
 
-        for title in titles:
+        batch_size = 20
+        for start_idx in range(0, len(titles), batch_size):
+            batch = list(titles.keys())[start_idx:start_idx + batch_size]
+            batch = [a.replace(' ', '_') for a in batch]
             params = {
                 "action": "query",
-                "titles": title,
+                "titles": '|'.join(batch),
                 "prop": "extracts",
                 "exintro": 1,
                 "format": "json",
@@ -133,14 +148,16 @@ class Input:
             r = s.get(url, params=params)
             data = r.json()
 
-            if "query" in data:
-                page = next(iter(data["query"]["pages"].values()))
-            if "missing" in page:
-                logging.warning(f"'{title}' not found on Wikipedia ({lang})")
-            elif "extract" in page and page["extract"].strip():
-                result[title] = page["extract"]
-            else:
-                logging.warning(f"'{title}' has no extract in wikipedia")
+            pages = data["query"]["pages"]
+            for page in pages.values():
+                title = page["title"].replace(' ', '_')
+                if "extract" in page:
+                    if title in titles:
+                        result[titles[title]] = page["extract"]
+                    else:
+                        logging.warning(f"'{title}' seems to be a redirection")
+                else:
+                    logging.warning(f"'{title}' has no extract in wikipedia")
 
         return result
 
